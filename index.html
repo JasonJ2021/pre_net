@@ -4,11 +4,11 @@
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
-		<title>reveal.js</title>
+		<title>网络基础</title>
 
 		<link rel="stylesheet" href="dist/reset.css">
 		<link rel="stylesheet" href="dist/reveal.css">
-		<link rel="stylesheet" href="dist/theme/black.css">
+		<link rel="stylesheet" href="dist/theme/dracula.css">
 
 		<!-- Theme used for syntax highlighted code -->
 		<link rel="stylesheet" href="plugin/highlight/monokai.css">
@@ -16,11 +16,146 @@
 	<body>
 		<div class="reveal">
 			<div class="slides">
-				<section>Slide 1</section>
-				<section>Slide 2</section>
+				<section>
+					<section>
+						<a href="https://revealjs.com">
+							<img src="./rustacean-flat-gesture.svg" alt="reveal.js logo" style="height: 250px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+						</a>
+						<h3>
+							基于C++的用户层TCP协议栈实现
+						</h3>
+						<p>
+							<small>网络基础大作业——孙加辉</small>
+						</p>
+					</section>
+					<section>
+						<img src="./resource/overview1.png" alt="reveal.js logo" style="height: 600px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+					</section>
+				</section>
+				
+				<section>
+					<section>
+						<h3>
+							Part1: stitching substrings into a byte stream
+						</h3>
+						<p>
+							<big>为什么需要字节整流器?</big>
+							<blockquote >
+								&ldquo;TCP robustness against reordering and duplication comes from its ability to stitch arbitrary excerpts of the byte stream back into the original
+								stream. Implementing this in a discrete testable module will make handling incoming
+								segments much easier..&rdquo;
+							</blockquote>
+						</p>
+	
+					</section>
+					
+					<section data-auto-animate>
+						<h2 data-id="code-title">内部结构</h2>
+						<img src="./resource/lab1.jpg" alt="reveal.js logo" style="height: 600px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+
+					</section>
+
+					<section data-auto-animate>
+						<h2 data-id="code-title">API接口</h2>
+						<pre data-id="code-animation"><code class="hljs javascript" data-trim data-line-numbers>
+							StreamReassembler(const size_t capacity);
+							// 核心函数:把以index开头的data放入到整流器中
+							void push_substring(const string &data, const uint64_t index, const bool eof);
+							// Access the reassembled ByteStream (your code from Lab 0)
+							ByteStream &stream_out();
+							// The number of bytes in the substrings stored but not yet reassembled
+							size_t unassembled_bytes() const;
+							// Is the internal state empty (other than the output stream)?
+							bool empty() const;
+						</code></pre>
+					</section>
+
+					
+
+					<section data-auto-animate>
+						<h2 data-id="code-title">代码实现</h2>
+						<pre data-id="code-animation"><code class="hljs javascript" data-trim data-line-numbers="|6-10|16-17|19|25-31"><script type="text/template">
+							std::deque<char> _buffer;              // maintain a non-overlapping string buffer
+							std::deque<bool> _bitmap;              // bitmap,标志buffer中各个位是否有效
+							void mergeTo_output();
+
+							void StreamReassembler::push_substring(const string &data, const uint64_t index, const bool eof) {
+								if (index + data.size() <= index_unass) {
+										// invalid string
+										// 无效的string, 已经全部被整流到outputstream中
+										return;
+								}
+								for (size_t i = 0; i < bytes_actual_written; i++) {
+										if (_bitmap[i]) {
+												continue;
+										}
+										_unass_bytes += 1;
+										_bitmap[i] = true;
+										_buffer[i] = data[i + offset];
+								}
+								mergeTo_output();
+								...
+						}
+						
+						void StreamReassembler::mergeTo_output() {
+								string temp ="";
+								while (_bitmap.front()) {
+										temp += _buffer.front();
+										_bitmap.pop_front();
+										_buffer.pop_front();
+										_bitmap.push_back(false);
+										_buffer.push_back('\0');
+								}
+								if(temp.size() > 0){
+										_output.write(temp);
+										_unass_bytes -= temp.size();
+										index_unass += temp.size();
+								}
+						}
+						</script></code></pre>
+					</section>
+
+				</section>
+				
+				<section>
+					<section>
+						<h3>
+							Part2: TCP Receiver
+						</h3>
+						<p>
+							<blockquote >
+								&ldquo;
+								In TCP, acknowledgment tells the sender what bytes
+								it needs to send or resend. Flow control means, \What range of indices is the receiver
+								interested and willing to receive?" (usually as a function of its remaining capacity).
+								This tells the sender how much it's allowed to send.&rdquo;
+							</blockquote>
+						</p>
+	
+					</section>
+
+					<section data-auto-animate>
+						<h3 data-id="code-title">Overview</h3>
+						<img src="./resource/SegmentTCPRecv.png" alt="reveal.js logo" style="height: 300px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+						<ul>
+							<li>Seqno, SYN, FIN, Payload</li>
+							<li>Ackno, Win</li>
+						</ul>
+					</section>
+	
+
+				</section>
+				
 			</div>
 		</div>
 
+
+
+
+
+
+
+		
 		<script src="dist/reveal.js"></script>
 		<script src="plugin/notes/notes.js"></script>
 		<script src="plugin/markdown/markdown.js"></script>
