@@ -139,13 +139,190 @@
 						<img src="./resource/SegmentTCPRecv.png" alt="reveal.js logo" style="height: 300px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
 						<ul>
 							<li>Seqno, SYN, FIN, Payload</li>
-							<li>Ackno, Win</li>
+							<li>Ackno, Window Size</li>
 						</ul>
 					</section>
-	
+					
+					<section data-auto-animate>
+						<h3 data-id="code-title">64-bit index转换为32-bit</h3>
+						<img src="./resource/转换图.png" alt="reveal.js logo" style="height: 200px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+						<pre data-id="code-animation"><code class="hljs javascript" data-trim data-line-numbers="|1-6|10-12|">
+							WrappingInt32 wrap(uint64_t n, WrappingInt32 isn) {
+								uint64_t temp = n + isn.raw_value();
+								temp &= ((1ll << 32) - 1);
+								uint32_t result_raw_value = static_cast<uint32_t>(temp);
+								return WrappingInt32{result_raw_value};
+						}
+						uint64_t unwrap(WrappingInt32 n, WrappingInt32 isn, uint64_t checkpoint) {
+							WrappingInt32 c = wrap(checkpoint, isn);
+							int64_t offset = n.raw_value() - c.raw_value();
+							int64_t ans = checkpoint + offset;
+							if(offset > (1ll << 31) && ans >= (1ll << 32)){
+									ans = ans - (1ll << 32);
+							}
+							return ans;
+					}
+						</code></pre>
+					</section>
+					<section data-auto-animate>
+						<h3 data-id="code-title">实现思路</h3>
+						<ol>
+							<li>从TCP Connection另一端接收Segment</li>
+							<li>把Segment放到整流器中</li>
+							<li>计算Ackno & Window Size, 放到Outgoing Segment中</li>
+						</ol>
+					</section>
+
+					<section data-auto-animate>
+						<h3 data-id="code-title">代码接口</h3>
+						<pre data-id="code-animation"><code class="hljs javascript" data-trim data-line-numbers>
+    			void segment_received(const TCPSegment &seg);
+							std::optional<WrappingInt32> ackno() const;
+							size_t window_size() const;
+						</code></pre>
+						<ol>
+							<li>segment_received(): 主要的工作就是从seg中抽取seqno, 转换为stream index和数据一起放到整流器中</li>
+							<li>ackno(): 未写入output_stream中的第一个字节位置, 用于可靠传输</li>
+							<li>window_size(): capacity - 当前output_stream中的字节数 = 整流器的大小, 用于流量控制</li>
+						</ol>
+					</section>
 
 				</section>
-				
+
+
+				<section>
+
+						<section>
+							<h3>
+								Part3: TCP Sender
+							</h3>
+							<p>
+								<blockquote >
+									&ldquo;
+									The basic principle is to send whatever the receiver will allow us to send, and keep retransmitting until the receiver acknowledges
+									each segment. This is called automatic repeat request (ARQ). The sender divides the byte stream up into segments and sends them, as much as the receiver's window allows.The sender's job is to make sure the receiver gets each byte at least once..&rdquo;
+								</blockquote>
+							</p>
+		
+						</section>
+
+						<section data-auto-animate>
+							<h3 data-id="code-title">Overview</h3>
+							<img src="./resource/tcpSender.png" alt="reveal.js logo" style="height: 250px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+							<ol>
+								<li>记录TCP Receiver发回来的Ackno/Window Size</li>
+								<li>尽量填充window, 创建新的TCP segment(包含SYN/FIN), 直到window被填充满/上层ByteStream为空</li>
+								<li>重新发送超时未被确认收到的outstanding segments</li>
+							</ol>
+						</section>
+
+						<section data-auto-animate>
+							<h3 data-id="code-title">重传机制的设计思路</h3>
+							<p>实现了一个retransmission timer, 被tick调用, 用于重传提醒.</p>
+							<ol>
+								<li>重传最近未被确认的一个segment</li>
+								<li>记录连续重传的次数, TCPConnection会用于决定这个连接是不是hopeless(太多的重传请求), 故而进行abort</li>
+								<li>RTO = 2 * RTO, 这会减慢重传的速率, 用于流量控制?</li>
+							</ol>
+						</section>
+
+						<section data-auto-animate>
+							<h3 data-id="code-title">重传机制的实现</h3>
+							<pre data-id="code-animation"><code class="hljs javascript" data-trim data-line-numbers="|5|7-10|">
+							void TCPSender::tick(const size_t ms_since_last_tick) {
+									if (timer_started) {
+											time_elapsed += ms_since_last_tick;
+											if (time_elapsed >= _cur_RTO) {
+													this->_segments_out.push(this->_outstanding_segments.front());
+													// 主要在这里zero_window是不会使得rto乘倍的，注意这里处理三次握手中的第一次握手.
+													if (non_zero_window || this->_outstanding_segments.front().header().syn) {
+															this->_consecutive_retransmissions++;
+															_cur_RTO = 2 * _cur_RTO;
+													}
+													time_elapsed = 0;
+											}
+									}
+							}
+							</code></pre>
+						</section>
+
+						<section data-auto-animate>
+							<h3 data-id="code-title">fill_windows() & ack_received()</h3>
+							<pre data-id="code-animation"><code class="hljs javascript" data-trim data-line-numbers>
+								void TCPSender::fill_window(){
+									1. 从上层的ByteStream读取字节, 发送尽可能多的字节(不超过window), 确保Payload不大于MAX_PAYLOAD_SIZE
+									2. 注意FIN/SYN的设置
+								}
+								void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_size){
+									1. 记录接受到ackno/window_size,
+									2. 对当前的window_size进行调整, 当前的window_size要减去已经发送出去但没有被承认的bytes number
+									3. 把被确认的outstanding segments移出待确认队列
+								} 
+							</code></pre>
+						</section>
+				</section>
+
+				<section>
+
+					<section>
+						<h3>
+							Part4: TCP Connection
+						</h3>
+						<img src="./resource/connection.png" alt="reveal.js logo" style="height: 250px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+
+	
+					</section>
+
+					<section data-auto-animate>
+						<h3 data-id="code-title">Overview</h3>
+						<img src="./resource/Tcp_state_diagram.png" alt="reveal.js logo" style="height: 600px; margin: 0 auto 4rem auto; background: transparent;" class="demo-logo">
+					</section>
+
+					<section data-auto-animate>
+						<h3 data-id="code-title">TCP Connection设计思路</h3>
+						<ul>
+							<li>如何处理接受到的Segments?</li>
+							<li>如何处理发送出去的Segments?</li>
+							<li>随着时间变化, Tcp Connection应该做什么?</li>
+						</ul>
+					</section>
+
+					<section data-auto-animate>
+						<h3 data-id="code-title">Receiving segments</h3>
+						<p>从Internet接受到TCPSegment,将相关信息交给Sender/Receiver</p>
+						<ol>
+							<li>如果<i>RST</i>flag被设置, 把输入输出流都设置为error state, 关闭连接</li>
+							<li>如果<i>ACK</i>flag被设置, 把ackno和window size交给TCP Sender</li>
+							<li>把<i>seqno/syn/payload/fin</i>交给TCPReceiver</li>
+							<li>需要处理<i>keep-alive</i> segment, 就是之前TCP Sender实现中大小为0的segment, 用于查看window和保活</li>
+						</ol>
+					</section>
+
+					<section data-auto-animate>
+						<h3 data-id="code-title">Sending segments</h3>
+						<ol>
+							<li>TCPSender会把相应的<i>seqno/SYN/payload/FIN</i>设置好</li>
+							<li>TCPReceiver会把相应的<i>ackno/window size</i>设置,并且设置<i>ACK</i> flag</li>
+						</ol>
+					</section>
+					<section data-auto-animate>
+						<h3 data-id="code-title">When time passes</h3>
+						<ol>
+							<li>TCPConnect会告诉TCPSender时间的流逝</li>
+							<li>如果重传次数过多, 终止这个连接, 向另外一个中断发送一个空的segment(with <i>RST</i> flag)</li>
+							<li>必要的时候清除连接</li>
+						</ol>
+						<blockquote >
+							终止连接的两种情况
+							<ul>
+								<li>重传过多次数</li>
+								<li>TCPConnection析构被调用</li>
+							</ul>
+						</blockquote>
+					</section>
+			</section>
+
+
 			</div>
 		</div>
 
